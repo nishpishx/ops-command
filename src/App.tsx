@@ -14,6 +14,10 @@ import {
   computeModelStats, computeTeamStats,
 } from './lib/simulator';
 import { evaluateRules, DEFAULT_RULES } from './lib/alertEngine';
+import {
+  loadCalls, persistCalls, purgeStaleCalls,
+  loadRules, saveRules, loadAlerts, saveAlerts,
+} from './lib/storage';
 import type {
   ApiCall, AlertRule, ActiveAlert, DashboardSummary,
   TimePoint, ModelStats, TeamStats,
@@ -23,6 +27,8 @@ const MAX_CALLS = 2000;
 const TICK_MS = 1500;
 const EVAL_EVERY = 5;
 const BUDGET_24H = 50.0;
+// Write new calls to IndexedDB in batches every N ticks to avoid thrashing
+const PERSIST_EVERY = 10;
 
 function computeSummary(calls1h: ApiCall[], calls24h: ApiCall[]): DashboardSummary {
   const ok1h = calls1h.filter(c => c.status === 200);
@@ -50,9 +56,34 @@ function computeSummary(calls1h: ApiCall[], calls24h: ApiCall[]): DashboardSumma
 export default function App() {
   const [tab, setTab] = useState<Tab>('overview');
   const [isLive, setIsLive] = useState(true);
-  const [calls, setCalls] = useState<ApiCall[]>(() => seedHistory(60, 8));
+  const [hydrated, setHydrated] = useState(false);
+  const [calls, setCalls] = useState<ApiCall[]>([]);
   const [alerts, setAlerts] = useState<ActiveAlert[]>([]);
-  const [rules, setRules] = useState<AlertRule[]>(DEFAULT_RULES);
+  const [rules, setRules] = useState<AlertRule[]>(() => loadRules() ?? DEFAULT_RULES);
+
+  // Hydrate calls and alerts from storage on first mount
+  useEffect(() => {
+    loadCalls(86_400_000).then(stored => {
+      if (stored.length > 0) {
+        // Use stored history, trimmed to MAX_CALLS
+        setCalls(stored.slice(-MAX_CALLS));
+      } else {
+        // First ever load — seed with fake history so charts aren't empty
+        const seeded = seedHistory(60, 8);
+        setCalls(seeded);
+        persistCalls(seeded);
+      }
+    }).catch(() => {
+      setCalls(seedHistory(60, 8));
+    }).finally(() => {
+      setHydrated(true);
+    });
+
+    setAlerts(loadAlerts());
+
+    // Purge calls older than 24h once on startup
+    purgeStaleCalls(86_400_000).catch(() => {});
+  }, []);
 
   const now = Date.now();
   const calls1h = calls.filter(c => c.timestamp >= now - 3_600_000);
@@ -67,17 +98,25 @@ export default function App() {
   const tickRef = useRef(0);
   const rulesRef = useRef(rules);
   rulesRef.current = rules;
+  const pendingCallsRef = useRef<ApiCall[]>([]);
 
   useEffect(() => {
-    if (!isLive) return;
+    if (!isLive || !hydrated) return;
     const id = setInterval(() => {
       tickRef.current += 1;
       const newCall = generateApiCall();
+      pendingCallsRef.current.push(newCall);
 
       setCalls(prev => {
         const next = [...prev, newCall];
         return next.length > MAX_CALLS ? next.slice(next.length - MAX_CALLS) : next;
       });
+
+      // Batch-persist new calls to IndexedDB
+      if (tickRef.current % PERSIST_EVERY === 0) {
+        const batch = pendingCallsRef.current.splice(0);
+        if (batch.length) persistCalls(batch).catch(() => {});
+      }
 
       if (tickRef.current % EVAL_EVERY === 0) {
         setCalls(prevCalls => {
@@ -92,7 +131,9 @@ export default function App() {
             const updated = prevAlerts.map(a =>
               resolved.includes(a.id) ? { ...a, resolved: true, resolvedAt: Date.now() } : a
             );
-            return [...updated, ...fired];
+            const next = [...updated, ...fired];
+            saveAlerts(next);
+            return next;
           });
 
           return prevCalls;
@@ -101,14 +142,34 @@ export default function App() {
     }, TICK_MS);
 
     return () => clearInterval(id);
-  }, [isLive]);
+  }, [isLive, hydrated]);
 
   const handleDismiss = useCallback((id: string) => {
-    setAlerts(prev => prev.map(a => a.id === id ? { ...a, resolved: true, resolvedAt: Date.now() } : a));
+    setAlerts(prev => {
+      const next = prev.map(a => a.id === id ? { ...a, resolved: true, resolvedAt: Date.now() } : a);
+      saveAlerts(next);
+      return next;
+    });
+  }, []);
+
+  const handleRulesUpdate = useCallback((next: AlertRule[]) => {
+    saveRules(next);
+    setRules(next);
   }, []);
 
   const p95Rule = rules.find(r => r.id === 'rule_p95_latency' && r.enabled);
   const p95Threshold = p95Rule?.threshold ?? 2000;
+
+  if (!hydrated) {
+    return (
+      <div className="min-h-screen bg-gray-950 flex items-center justify-center">
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+          <p className="text-gray-500 text-sm">Loading history…</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gray-950">
@@ -157,7 +218,7 @@ export default function App() {
 
         {tab === 'rules' && (
           <div className="grid grid-cols-1 xl:grid-cols-[1fr_380px] gap-6">
-            <RulesEditor rules={rules} onUpdate={setRules} />
+            <RulesEditor rules={rules} onUpdate={handleRulesUpdate} />
             <div className="space-y-4">
               <AlertPanel alerts={alerts} onDismiss={handleDismiss} />
               <MetricsCards summary={summary} />
