@@ -186,7 +186,7 @@ export default function App() {
           <>
             <MetricsCards summary={summary} />
 
-            <div className="grid grid-cols-1 xl:grid-cols-[1fr_320px] gap-4">
+            <div className="grid grid-cols-1 xl:grid-cols-[1fr_420px] gap-4">
               <div className="space-y-4">
                 <LatencyChart data={timeSeries} p95Threshold={p95Threshold} />
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

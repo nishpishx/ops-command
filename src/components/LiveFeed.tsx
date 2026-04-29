@@ -1,4 +1,3 @@
-import { useRef, useEffect } from 'react';
 import { AlertTriangle, CheckCircle, XCircle } from 'lucide-react';
 import { Card } from './ui/Card';
 import { Badge } from './ui/Badge';
@@ -39,24 +38,6 @@ function latencyColor(ms: number) {
 }
 
 export function LiveFeed({ calls, maxRows = 50 }: Props) {
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const autoScrollRef = useRef(true);
-
-  // Auto-scroll only when near bottom
-  const handleScroll = () => {
-    const el = containerRef.current;
-    if (!el) return;
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-    autoScrollRef.current = nearBottom;
-  };
-
-  useEffect(() => {
-    if (autoScrollRef.current) {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }
-  }, [calls]);
-
   const visible = [...calls].reverse().slice(0, maxRows);
 
   return (
@@ -81,8 +62,6 @@ export function LiveFeed({ calls, maxRows = 50 }: Props) {
       </div>
 
       <div
-        ref={containerRef}
-        onScroll={handleScroll}
         className="flex-1 overflow-y-auto min-h-0"
         style={{ maxHeight: '380px' }}
       >
@@ -130,7 +109,6 @@ export function LiveFeed({ calls, maxRows = 50 }: Props) {
             </span>
           </div>
         ))}
-        <div ref={bottomRef} />
       </div>
     </Card>
   );
